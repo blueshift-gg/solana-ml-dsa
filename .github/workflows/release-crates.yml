@@ -1,0 +1,54 @@
+name: Release crates
+
+run-name: "Release crates ${{ github.ref_name }}"
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    name: Check release
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          v=$(yq -e '.package.version' Cargo.toml)
+          tag="v${GITHUB_REF_NAME#v}"
+          test "$tag" = "v$v" \
+            || { echo "::error::tag ${tag} does not match Cargo.toml version v$v"; exit 1; }
+
+      - name: Check crate version not already published
+        id: check
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if curl -fsS -H 'User-Agent: blueshift-gg-release (github-actions)' \
+              "https://crates.io/api/v1/crates/solana-ml-dsa/$v" >/dev/null 2>&1; then
+            echo "solana-ml-dsa $v is already published to crates.io; skipping publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: Publish crates
+    needs: check
+    if: needs.check.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-crates
+      cancel-in-progress: false
+    environment: release
+    permissions:
+      id-token: write # crates.io trusted publishing (OIDC)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Publish crates
+        uses: blueshift-gg/github-actions/publish-crates@dc92f298d073f14b2447e1685ec6a2d816efd247
