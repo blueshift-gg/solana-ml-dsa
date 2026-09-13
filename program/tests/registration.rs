@@ -46,6 +46,26 @@ fn transaction_size(payer: &Address, instructions: &[Instruction]) -> usize {
 
 #[test]
 fn register_in_one_transaction_then_verify_from_account() {
+    // Fixed seeds are test fixtures only; never use these keys for funds.
+    let (public_key, secret_key) = ml_dsa_44::KG::keygen_from_seed(&[42; 32]);
+    let signature = secret_key
+        .try_sign_with_seed(&[0; 32], &[7; 32], CONTEXT)
+        .unwrap();
+    registration::<false>(public_key.into_bytes(), signature);
+}
+
+#[test]
+fn register_and_verify_turboshake() {
+    registration::<true>(
+        *include_bytes!("../../tests/fixtures/turbo.pk"),
+        *include_bytes!("../../tests/fixtures/turbo.sig"),
+    );
+}
+
+fn registration<const TURBO: bool>(
+    public_key: [u8; PUBLIC_KEY_LEN],
+    signature: [u8; SIGNATURE_LEN],
+) {
     let program = Address::new_from_array([1; 32]);
     let payer = Address::new_from_array([2; 32]);
     let key = Address::new_from_array([3; 32]);
@@ -54,14 +74,9 @@ fn register_in_one_transaction_then_verify_from_account() {
         (payer, Account::new(1_000_000_000, 0, &SYSTEM_PROGRAM)),
         (key, Account::default()),
     ];
-    // Fixed seeds are test fixtures only; never use these keys for funds.
-    let (public_key, secret_key) = ml_dsa_44::KG::keygen_from_seed(&[42; 32]);
-    let public_key = VerifyingKey::from_bytes(&(public_key.into_bytes()));
+    let public_key = VerifyingKey::<TURBO>::from_bytes(&public_key);
     let message = [7; 32];
-    let signature = secret_key
-        .try_sign_with_seed(&[0; 32], &message, CONTEXT)
-        .unwrap();
-    let mut data = vec![0];
+    let mut data = vec![if TURBO { 2 } else { 0 }];
     data.extend_from_slice(&public_key.to_bytes());
     let register = Instruction::new_with_bytes(program, &data, vec![AccountMeta::new(key, true)]);
     let instructions = [
@@ -89,7 +104,7 @@ fn register_in_one_transaction_then_verify_from_account() {
     assert_eq!(stored.data.len(), KEY_ACCOUNT_LEN);
     assert_eq!(&stored.data[8..], public_key.prepare().as_bytes());
     println!(
-        "registration: {} CUs, {size} V1 bytes",
+        "registration (TURBO={TURBO}): {} CUs, {size} V1 bytes",
         result.compute_units_consumed
     );
 
@@ -99,7 +114,7 @@ fn register_in_one_transaction_then_verify_from_account() {
     assert!(repeated.raw_result.is_err());
     assert_eq!(repeated.resulting_accounts, result.resulting_accounts);
 
-    let mut data = vec![1];
+    let mut data = vec![if TURBO { 3 } else { 1 }];
     data.extend_from_slice(&signature);
     data.extend_from_slice(&message);
     let mut verify =
@@ -114,9 +129,20 @@ fn register_in_one_transaction_then_verify_from_account() {
     assert!(verified.compute_units_consumed < 300_000);
     assert_eq!(verified.resulting_accounts, result.resulting_accounts);
     println!(
-        "verification: {} CUs, {size} V1 bytes",
+        "verification (TURBO={TURBO}): {} CUs, {size} V1 bytes",
         verified.compute_units_consumed
     );
+
+    // The instruction cannot reinterpret a cache prepared for the other mode.
+    let mut wrong_mode = verify.clone();
+    wrong_mode.data[0] ^= 2;
+    let rejected = svm.process_transaction_instructions(
+        &[wrong_mode],
+        &result.resulting_accounts,
+        Some(&payer),
+    );
+    assert!(rejected.raw_result.is_err());
+    assert_eq!(rejected.resulting_accounts, result.resulting_accounts);
 
     *verify.data.last_mut().unwrap() ^= 1;
     let rejected =

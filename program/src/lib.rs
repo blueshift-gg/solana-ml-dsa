@@ -9,10 +9,10 @@ use solana_pubkey::Pubkey;
 
 entrypoint!(process_instruction);
 
-const INITIALIZED: &[u8; 8] = b"MLDSA044";
+const INITIALIZED: [[u8; 8]; 2] = [*b"MLDSA044", *b"MLTUR044"];
 
 /// Example account header followed by a 4-byte-aligned prepared key.
-pub const KEY_ACCOUNT_LEN: usize = INITIALIZED.len() + PreparedVerifyingKey::BYTE_LEN;
+pub const KEY_ACCOUNT_LEN: usize = INITIALIZED[0].len() + PreparedVerifyingKey::<false>::BYTE_LEN;
 /// Domain separator used by this example's signatures.
 pub const CONTEXT: &[u8] = b"solana-ml-dsa";
 
@@ -28,45 +28,49 @@ fn process_instruction(id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         .split_first()
         .ok_or(ProgramError::InvalidInstructionData)?;
     match tag {
-        0 => create(account, data),
-        1 => verify(account, data),
+        0 => create::<false>(account, data),
+        1 => verify::<false>(account, data),
+        2 => create::<true>(account, data),
+        3 => verify::<true>(account, data),
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
 
-// [0][public key: 1312 bytes]. The new key account signs registration.
-fn create(account: &AccountInfo, data: &[u8]) -> ProgramResult {
+// [0: SHAKE or 2: TurboSHAKE][public key: 1312]. The new key account signs.
+fn create<const TURBO: bool>(account: &AccountInfo, data: &[u8]) -> ProgramResult {
     if !account.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
     }
     if !account.is_writable {
         return Err(ProgramError::InvalidAccountData);
     }
-    let public_key =
-        VerifyingKey::ref_from_bytes(data).map_err(|_| ProgramError::InvalidInstructionData)?;
+    let public_key = VerifyingKey::<TURBO>::ref_from_bytes(data)
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
     let mut bytes = account.try_borrow_mut_data()?;
-    let (header, bytes) = bytes.split_at_mut(INITIALIZED.len());
+    let initialized = &INITIALIZED[TURBO as usize];
+    let (header, bytes) = bytes.split_at_mut(initialized.len());
     if header != [0; 8] {
         return Err(ProgramError::AccountAlreadyInitialized);
     }
-    let prepared = PreparedVerifyingKey::mut_from_bytes(bytes)
+    let prepared = PreparedVerifyingKey::<TURBO>::mut_from_bytes(bytes)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     public_key.prepare_into(prepared);
-    header.copy_from_slice(INITIALIZED);
+    header.copy_from_slice(initialized);
     Ok(())
 }
 
-// [1][signature: 2420 bytes][message: remaining bytes]. Read-only account.
-fn verify(account: &AccountInfo, data: &[u8]) -> ProgramResult {
+// [1: SHAKE or 3: TurboSHAKE][signature: 2420][message]. Read-only key account.
+fn verify<const TURBO: bool>(account: &AccountInfo, data: &[u8]) -> ProgramResult {
     let (signature, message) = data
         .split_first_chunk::<SIGNATURE_LEN>()
         .ok_or(ProgramError::InvalidInstructionData)?;
     let bytes = account.try_borrow_data()?;
-    let (header, bytes) = bytes.split_at(INITIALIZED.len());
-    if header != INITIALIZED {
+    let initialized = &INITIALIZED[TURBO as usize];
+    let (header, bytes) = bytes.split_at(initialized.len());
+    if header != initialized {
         return Err(ProgramError::UninitializedAccount);
     }
-    let prepared = PreparedVerifyingKey::ref_from_bytes(bytes)
+    let prepared = PreparedVerifyingKey::<TURBO>::ref_from_bytes(bytes)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     prepared
         .verify_with_context(

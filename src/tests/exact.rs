@@ -162,7 +162,7 @@ fn optimised_row(
     bits: &[u64; 4],
 ) -> [u8; 192] {
     let scale = |v: i128| modq(v * -F) as u32;
-    let mut row = [[0u32; PreparedVerifyingKey::ROW]; N];
+    let mut row = [[0u32; PreparedVerifyingKey::<false>::ROW]; N];
     for k in 0..N {
         for j in 0..L {
             row[k][j] = scale(a[j][k]);

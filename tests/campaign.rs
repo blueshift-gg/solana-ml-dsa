@@ -50,7 +50,7 @@ impl Key {
     fn from_bytes(pk: [u8; PUBLIC_KEY_LEN]) -> Key {
         Key {
             pk,
-            prepared: VerifyingKey::from_bytes(&pk).prepare(),
+            prepared: VerifyingKey::<false>::from_bytes(&pk).prepare(),
             rust: ml_dsa_44::PublicKey::try_from_bytes(pk).unwrap(),
             c: mldsa44::PublicKey::from_bytes(&pk).unwrap(),
         }
@@ -62,7 +62,7 @@ impl Key {
             .prepared
             .verify_with_context(msg, ctx, Signature::ref_from_bytes(sig).unwrap())
             .is_ok();
-        let raw = VerifyingKey::from_bytes(&self.pk)
+        let raw = VerifyingKey::<false>::from_bytes(&self.pk)
             .verify_with_context(msg, ctx, Signature::ref_from_bytes(sig).unwrap())
             .is_ok();
         assert_eq!(ours, raw, "{what}: prepared vs raw key");
@@ -104,14 +104,15 @@ fn c_sign(sk: &mldsa44::SecretKey, ctx: &[u8], msg: &[u8]) -> [u8; SIGNATURE_LEN
 /// A key prepared at compile time is byte for byte the key prepared at
 /// run time.
 static COMPILE_TIME_KEY: PreparedVerifyingKey = {
-    let mut key = PreparedVerifyingKey::ZERO;
-    VerifyingKey::from_bytes(include_bytes!("fixtures/campaign.pk")).prepare_into(&mut key);
+    let mut key = PreparedVerifyingKey::<false>::ZERO;
+    VerifyingKey::<false>::from_bytes(include_bytes!("fixtures/campaign.pk"))
+        .prepare_into(&mut key);
     key
 };
 
 #[test]
 fn compile_time_preparation_equals_run_time_preparation() {
-    let pk = VerifyingKey::from_bytes(include_bytes!("fixtures/campaign.pk"));
+    let pk = VerifyingKey::<false>::from_bytes(include_bytes!("fixtures/campaign.pk"));
     let runtime = pk.prepare();
     assert_eq!(COMPILE_TIME_KEY.as_bytes()[..], runtime.as_bytes()[..]);
 }

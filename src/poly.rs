@@ -10,7 +10,7 @@ use crate::params::{
 };
 use crate::reduce::{QINV64, caddq, plantard, reduce32};
 use crate::rounding::w1_coefficient;
-use solana_shake::{Shake128, Shake256};
+use solana_shake::Shake;
 
 /// 256 coefficients.
 #[derive(Clone, Copy)]
@@ -53,17 +53,17 @@ impl Poly {
     /// i.e. seven groups of three lanes holding eight candidates each; the
     /// candidates are cut out of the lanes with constant shifts, in the
     /// same order as the byte stream.
-    pub const fn uniform(&mut self, seed: &[u8], nonce: u16) {
+    pub const fn uniform<const TURBO: bool>(&mut self, seed: &[u8], nonce: u16) {
         const MASK: u64 = 0x7F_FFFF;
-        let mut s = Shake128::new();
+        let mut s = Shake::<128, TURBO>::new();
         s.absorb(seed);
         s.absorb(&nonce.to_le_bytes());
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut ctr = 0;
         loop {
             let lanes = s.rate_lanes();
             let mut g = 0;
-            while g < Shake128::RATE / 24 {
+            while g < Shake::<128, TURBO>::RATE / 24 {
                 let l0 = lanes[3 * g];
                 let l1 = lanes[3 * g + 1];
                 let l2 = lanes[3 * g + 2];
@@ -98,17 +98,17 @@ impl Poly {
 
     /// `SampleInBall` (Algorithm 29): τ coefficients in `{−1, 1}`, the
     /// rest zero, from `SHAKE256(c̃)`.
-    pub const fn challenge(&mut self, seed: &[u8; CTILDEBYTES]) {
-        let mut s = Shake256::new();
+    pub const fn challenge<const TURBO: bool>(&mut self, seed: &[u8; CTILDEBYTES]) {
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(seed);
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut signs = s.rate_lanes()[0];
         let mut pos = 8;
         *self = Poly::ZERO;
         let mut i = N - TAU;
         while i < N {
             let b = loop {
-                if pos >= Shake256::RATE {
+                if pos >= Shake::<256, TURBO>::RATE {
                     s.permute();
                     pos = 0;
                 }

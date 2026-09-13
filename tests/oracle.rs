@@ -30,7 +30,7 @@ impl Rng {
 
 fn keypair() -> (VerifyingKey, ml_dsa_44::PrivateKey) {
     let (pk, sk) = ml_dsa_44::try_keygen().unwrap();
-    (VerifyingKey::from_bytes(&(pk.into_bytes())), sk)
+    (VerifyingKey::<false>::from_bytes(&(pk.into_bytes())), sk)
 }
 
 fn prepared(pk: &VerifyingKey) -> PreparedVerifyingKey {
@@ -134,7 +134,7 @@ fn rejects_every_single_bit_flip_the_reference_rejects() {
     let mut k = pk.to_bytes();
     k[40] ^= 1;
     assert_eq!(
-        prepared(&VerifyingKey::from_bytes(&k)).verify_with_context(&msg, &ctx, &sig),
+        prepared(&VerifyingKey::<false>::from_bytes(&k)).verify_with_context(&msg, &ctx, &sig),
         Err(Error::InvalidSignature)
     );
 }
@@ -250,34 +250,34 @@ fn account_form_round_trips_and_verifies() {
     let sig = sign(&sk, b"account", b"prepared in place");
     let direct = pk.prepare();
     // A 4-byte aligned buffer, as account data is on chain.
-    let mut words = vec![0u32; PreparedVerifyingKey::BYTE_LEN / 4];
+    let mut words = vec![0u32; PreparedVerifyingKey::<false>::BYTE_LEN / 4];
     let bytes: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(
             words.as_mut_ptr() as *mut u8,
-            PreparedVerifyingKey::BYTE_LEN,
+            PreparedVerifyingKey::<false>::BYTE_LEN,
         )
     };
-    let in_place = PreparedVerifyingKey::mut_from_bytes(bytes).unwrap();
+    let in_place = PreparedVerifyingKey::<false>::mut_from_bytes(bytes).unwrap();
     pk.prepare_into(in_place);
     assert_eq!(in_place.as_bytes()[..], direct.as_bytes()[..]);
-    let borrowed = PreparedVerifyingKey::ref_from_bytes(bytes).unwrap();
+    let borrowed = PreparedVerifyingKey::<false>::ref_from_bytes(bytes).unwrap();
     assert_eq!(
         borrowed.verify_with_context(b"prepared in place", b"account", &sig),
         Ok(())
     );
     assert!(
-        PreparedVerifyingKey::ref_from_bytes(&bytes[1..]).is_err(),
+        PreparedVerifyingKey::<false>::ref_from_bytes(&bytes[1..]).is_err(),
         "wrong length"
     );
-    let mut longer = vec![0u32; PreparedVerifyingKey::BYTE_LEN / 4 + 1];
+    let mut longer = vec![0u32; PreparedVerifyingKey::<false>::BYTE_LEN / 4 + 1];
     let misaligned: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(
             (longer.as_mut_ptr() as *mut u8).add(2),
-            PreparedVerifyingKey::BYTE_LEN,
+            PreparedVerifyingKey::<false>::BYTE_LEN,
         )
     };
     assert!(
-        PreparedVerifyingKey::ref_from_bytes(misaligned).is_err(),
+        PreparedVerifyingKey::<false>::ref_from_bytes(misaligned).is_err(),
         "misaligned"
     );
 }

@@ -1,10 +1,10 @@
-//! Public SDK contract and byte parity with the TypeScript package.
+//! Public SDK contract and prepared-key encoding.
 use fips204::ml_dsa_44;
 use fips204::traits::{KeyGen, SerDes, Signer};
 use solana_ml_dsa::ml_dsa_44::{Error, PreparedVerifyingKey, Signature, VerifyingKey};
 
 fn key() -> VerifyingKey {
-    VerifyingKey::from_bytes(include_bytes!("fixtures/campaign.pk"))
+    VerifyingKey::<false>::from_bytes(include_bytes!("fixtures/campaign.pk"))
 }
 
 #[test]
@@ -12,11 +12,11 @@ fn prepared_encoding_matches_shared_fixture() {
     let expected = std::fs::read("tests/fixtures/sdk-prepared.bin").unwrap();
     let prepared = key().prepare();
     assert_eq!(prepared.as_bytes().as_slice(), expected);
-    let decoded = PreparedVerifyingKey::from_slice(&expected).unwrap();
+    let decoded = PreparedVerifyingKey::<false>::from_slice(&expected).unwrap();
     assert_eq!(decoded.as_bytes(), prepared.as_bytes());
-    let invalid = [255; PreparedVerifyingKey::BYTE_LEN];
+    let invalid = [255; PreparedVerifyingKey::<false>::BYTE_LEN];
     assert!(matches!(
-        PreparedVerifyingKey::from_bytes(&invalid),
+        PreparedVerifyingKey::<false>::from_bytes(&invalid),
         Err(Error::InvalidEncoding)
     ));
 
@@ -33,17 +33,23 @@ fn prepared_encoding_matches_shared_fixture() {
 #[test]
 fn encoded_values_and_verification() {
     let (pk, sk) = ml_dsa_44::KG::keygen_from_seed(&[42; 32]);
-    let key = VerifyingKey::from_bytes(&pk.into_bytes());
+    let key = VerifyingKey::<false>::from_bytes(&pk.into_bytes());
     let signature = Signature::from_bytes(&sk.try_sign_with_seed(&[0; 32], b"sdk", b"").unwrap());
     let encoded = key.to_bytes();
-    assert_eq!(VerifyingKey::try_from(encoded.as_slice()).unwrap(), key);
-    assert_eq!(VerifyingKey::ref_from_bytes(&encoded).unwrap(), &key);
+    assert_eq!(
+        VerifyingKey::<false>::try_from(encoded.as_slice()).unwrap(),
+        key
+    );
+    assert_eq!(
+        VerifyingKey::<false>::ref_from_bytes(&encoded).unwrap(),
+        &key
+    );
     assert_eq!(
         Signature::from_slice(signature.as_bytes()).unwrap(),
         signature
     );
     assert_eq!(
-        VerifyingKey::from_slice(&encoded[..1311]),
+        VerifyingKey::<false>::from_slice(&encoded[..1311]),
         Err(Error::InvalidLength)
     );
     assert_eq!(Signature::from_slice(&[]), Err(Error::InvalidLength));

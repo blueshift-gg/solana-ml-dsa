@@ -1,5 +1,7 @@
 //! ML-DSA-44 (FIPS 204): 1,312-byte public keys and 2,420-byte signatures.
 //! Other parameter sets are not accepted by these types.
+//! `TURBO = true` replaces SHAKE128/256 with TurboSHAKE128/256, domain `0x1f`.
+//! That variant requires matching key generation and signing; it is not FIPS 204.
 
 pub use crate::Error;
 use crate::params::{
@@ -9,7 +11,7 @@ use crate::params::{
 pub use crate::params::{CONTEXT_MAX_LEN, PUBLIC_KEY_LEN, SIGNATURE_LEN};
 use crate::poly::Poly;
 use crate::{codec, reduce};
-use solana_shake::Shake256;
+use solana_shake::Shake;
 
 /// `f = 2^64 / 256 mod Q`, the reference's final inverse-NTT multiplier
 /// (`mont^2 / 256` in PQClean); the prepared tables carry `−f`.
@@ -18,9 +20,11 @@ pub(crate) const INVNTT_SCALE: i64 = 41978;
 const NEG_F_PLANTARD: u64 = reduce::plantard_constant(-INVNTT_SCALE);
 
 /// `ρ ‖ t1`, 1312 bytes.
+/// `TURBO` selects SHAKE (`false`, the default) or TurboSHAKE (`true`).
+/// The encoding does not identify the choice; the protocol must bind it to the key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct VerifyingKey([u8; PUBLIC_KEY_LEN]);
+pub struct VerifyingKey<const TURBO: bool = false>([u8; PUBLIC_KEY_LEN]);
 
 /// `c̃ ‖ z ‖ h`, 2420 bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +34,7 @@ pub struct Signature([u8; SIGNATURE_LEN]);
 /// What verification needs from a public key, computed once: `Â =
 /// ExpandA(ρ)` and `NTT(t1 · 2^d)` scaled by `−f`, and `tr = H(pk, 64)`.
 /// 20,544 bytes, 4-byte aligned, no padding; an account holds these bytes.
+/// `TURBO` must match the key that produced the cache and is not encoded in it.
 ///
 /// The scaling: the reference reduces each row product by Montgomery
 /// (`× 2^-32`) and ends its inverse transform with `× f · 2^-32`; this
@@ -41,25 +46,27 @@ pub struct Signature([u8; SIGNATURE_LEN]);
 /// t̂1_i[k])`, so a row's five operands at one coefficient are read
 /// through one pointer.
 #[repr(C)]
-pub struct PreparedVerifyingKey {
+pub struct PreparedVerifyingKey<const TURBO: bool = false> {
     /// `−f · (Â_i0, Â_i1, Â_i2, Â_i3, NTT(t1_i · 2^d))[k]`, standard
     /// representatives.
     #[doc(hidden)]
-    pub(crate) rows: [[[u32; PreparedVerifyingKey::ROW]; N]; K],
+    pub(crate) rows: [PreparedRow; K],
     tr: [u8; TRBYTES],
 }
 
 /// One prepared row: five operands at each of 256 coefficients.
-pub type PreparedRow = [[u32; PreparedVerifyingKey::ROW]; N];
+pub type PreparedRow = [[u32; L + 1]; N];
 
-impl PreparedVerifyingKey {
+const PREPARED_KEY_LEN: usize = core::mem::size_of::<PreparedVerifyingKey>();
+
+impl<const TURBO: bool> PreparedVerifyingKey<TURBO> {
     /// Operands per coefficient: the four matrix columns and t1.
     pub const ROW: usize = L + 1;
 
     /// Decode an owned cache on a host, checking its coefficient representation.
     /// This does not authenticate its derivation from a public key.
     #[cfg(not(target_os = "solana"))]
-    pub fn from_bytes(bytes: &[u8; Self::BYTE_LEN]) -> Result<Self, Error> {
+    pub fn from_bytes(bytes: &[u8; PREPARED_KEY_LEN]) -> Result<Self, Error> {
         let mut out = Self::ZERO;
         for (value, bytes) in out
             .rows
@@ -85,11 +92,11 @@ impl PreparedVerifyingKey {
     }
 
     /// Byte length of the prepared form, excluding any caller-owned account header.
-    pub const BYTE_LEN: usize = core::mem::size_of::<PreparedVerifyingKey>();
+    pub const BYTE_LEN: usize = PREPARED_KEY_LEN;
 
     /// The all-zero value to [`VerifyingKey::prepare_into`].
-    pub const ZERO: PreparedVerifyingKey = PreparedVerifyingKey {
-        rows: [[[0; PreparedVerifyingKey::ROW]; N]; K],
+    pub const ZERO: Self = Self {
+        rows: [[[0; L + 1]; N]; K],
         tr: [0; TRBYTES],
     };
 
@@ -97,7 +104,7 @@ impl PreparedVerifyingKey {
     /// does not fit an SBPF frame; there, use a `static` with
     /// [`VerifyingKey::prepare_into`].
     #[cfg(not(target_os = "solana"))]
-    const fn prepare(pk: &VerifyingKey) -> PreparedVerifyingKey {
+    const fn prepare(pk: &VerifyingKey<TURBO>) -> PreparedVerifyingKey<TURBO> {
         let mut out = Self::ZERO;
         Self::prepare_into(pk, &mut out);
         out
@@ -112,7 +119,7 @@ impl PreparedVerifyingKey {
     /// Prepares a public key in place (FIPS 204 `ExpandA`, `NTT(t1 · 2^d)`,
     /// `tr`), e.g. into an account borrowed with
     /// [`mut_from_bytes`](Self::mut_from_bytes).
-    const fn prepare_into(pk: &VerifyingKey, out: &mut PreparedVerifyingKey) {
+    const fn prepare_into(pk: &VerifyingKey<TURBO>, out: &mut PreparedVerifyingKey<TURBO>) {
         let mut i = 0;
         while i < K {
             Self::prepare_row(pk, i, &mut out.rows[i]);
@@ -124,12 +131,12 @@ impl PreparedVerifyingKey {
     /// Row `i` of the prepared form: `Â_i0, …, Â_i3` from `ExpandA(ρ)` and
     /// `NTT(t1_i · 2^d)`, scaled by `−f`. One polynomial lives in this
     /// frame, so an account can be filled a row at a time as it grows.
-    const fn prepare_row(pk: &VerifyingKey, i: usize, row: &mut PreparedRow) {
+    const fn prepare_row(pk: &VerifyingKey<TURBO>, i: usize, row: &mut PreparedRow) {
         let (rho, t1_bytes) = pk.0.split_at(SEEDBYTES);
         let mut p = Poly::ZERO;
         let mut j = 0;
         while j < L {
-            p.uniform(rho, ((i << 8) + j) as u16);
+            p.uniform::<TURBO>(rho, ((i << 8) + j) as u16);
             p.freeze_scaled_into(NEG_F_PLANTARD, row, j);
             j += 1;
         }
@@ -160,10 +167,10 @@ impl PreparedVerifyingKey {
     /// not [`BYTE_LEN`](Self::BYTE_LEN) or the start is not 4-byte aligned.
     ///
     /// This checks the memory layout only. The caller must ensure these
-    /// bytes came from [`VerifyingKey::prepare_into`] and authenticate
-    /// the account's ownership and initialization before verification.
+    /// bytes came from [`VerifyingKey::prepare_into`] with the same `TURBO`
+    /// choice, and authenticate the account's ownership and initialization.
     #[allow(unsafe_code)]
-    pub fn ref_from_bytes(bytes: &[u8]) -> Result<&PreparedVerifyingKey, Error> {
+    pub fn ref_from_bytes(bytes: &[u8]) -> Result<&PreparedVerifyingKey<TURBO>, Error> {
         if bytes.len() != Self::BYTE_LEN {
             return Err(Error::InvalidLength);
         }
@@ -172,13 +179,13 @@ impl PreparedVerifyingKey {
         }
         // SAFETY: length and alignment checked; every bit pattern is a
         // valid `PreparedVerifyingKey` (only `u32` and `u8` fields, no padding).
-        Ok(unsafe { &*(bytes.as_ptr() as *const PreparedVerifyingKey) })
+        Ok(unsafe { &*(bytes.as_ptr() as *const Self) })
     }
 
     /// Mutable form of [`ref_from_bytes`](Self::ref_from_bytes), for
     /// [`VerifyingKey::prepare_into`].
     #[allow(unsafe_code)]
-    pub fn mut_from_bytes(bytes: &mut [u8]) -> Result<&mut PreparedVerifyingKey, Error> {
+    pub fn mut_from_bytes(bytes: &mut [u8]) -> Result<&mut PreparedVerifyingKey<TURBO>, Error> {
         if bytes.len() != Self::BYTE_LEN {
             return Err(Error::InvalidLength);
         }
@@ -186,14 +193,14 @@ impl PreparedVerifyingKey {
             return Err(Error::InvalidAlignment);
         }
         // SAFETY: as in `ref_from_bytes`; the borrow is exclusive.
-        Ok(unsafe { &mut *(bytes.as_mut_ptr() as *mut PreparedVerifyingKey) })
+        Ok(unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) })
     }
 
     /// The prepared key as bytes, e.g. to write into an account.
     #[allow(unsafe_code)]
-    pub fn as_bytes(&self) -> &[u8; Self::BYTE_LEN] {
+    pub fn as_bytes(&self) -> &[u8; PREPARED_KEY_LEN] {
         // SAFETY: `repr(C)` with no padding; every byte is initialised.
-        unsafe { &*(self as *const PreparedVerifyingKey as *const [u8; Self::BYTE_LEN]) }
+        unsafe { &*(self as *const Self as *const [u8; PREPARED_KEY_LEN]) }
     }
 
     /// Borrow the 64-byte public-key hash (`tr = H(pk, 64)` in FIPS 204).
@@ -205,15 +212,15 @@ impl PreparedVerifyingKey {
 /// `w += ExpandA(ρ)_{nonce} ∘ z`, the matrix polynomial living only in this
 /// frame.
 #[inline(never)]
-fn matrix_term(w: &mut Poly, rho: &[u8], nonce: u16, z: &Poly) {
+fn matrix_term<const TURBO: bool>(w: &mut Poly, rho: &[u8], nonce: u16, z: &Poly) {
     let mut a = Poly::ZERO;
-    a.uniform(rho, nonce);
+    a.uniform::<TURBO>(rho, nonce);
     w.add_products(&a, z);
 }
 
 /// `w −= ĉ ∘ NTT(t1_i · 2^d)`, the `t1` polynomial living only in this frame.
 #[inline(never)]
-fn t1_term(w: &mut Poly, pk: &VerifyingKey, i: usize, c_hat: &Poly) {
+fn t1_term<const TURBO: bool>(w: &mut Poly, pk: &VerifyingKey<TURBO>, i: usize, c_hat: &Poly) {
     let start = SEEDBYTES + i * POLYT1_PACKEDBYTES;
     let mut t = Poly::ZERO;
     t.t1_unpack_shifted(&pk.0[start..start + POLYT1_PACKEDBYTES]);
@@ -221,7 +228,7 @@ fn t1_term(w: &mut Poly, pk: &VerifyingKey, i: usize, c_hat: &Poly) {
     w.sub_products(c_hat, &t);
 }
 
-impl VerifyingKey {
+impl<const TURBO: bool> VerifyingKey<TURBO> {
     /// Verify a message with an empty FIPS 204 context.
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), Error> {
         self.verify_with_context(message, &[], signature)
@@ -241,10 +248,10 @@ impl VerifyingKey {
     /// Verify caller-formatted `M′` (FIPS 204 Algorithm 8).
     /// The caller is responsible for domain separation and context framing.
     pub fn verify_internal(&self, message: &[u8], signature: &Signature) -> Result<(), Error> {
-        let mut s = Shake256::new();
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(&self.public_key_hash());
         s.absorb(message);
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut mu = [0; CRHBYTES];
         s.squeeze(&mut mu);
         self.verify_mu(&mu, signature)
@@ -257,13 +264,13 @@ impl VerifyingKey {
 
     /// Prepare by value on a host. On Solana, use [`Self::prepare_into`].
     #[cfg(not(target_os = "solana"))]
-    pub const fn prepare(&self) -> PreparedVerifyingKey {
-        PreparedVerifyingKey::prepare(self)
+    pub const fn prepare(&self) -> PreparedVerifyingKey<TURBO> {
+        PreparedVerifyingKey::<TURBO>::prepare(self)
     }
 
     /// Expand into caller-owned storage without a large return value or heap allocation.
-    pub const fn prepare_into(&self, out: &mut PreparedVerifyingKey) {
-        PreparedVerifyingKey::prepare_into(self, out);
+    pub const fn prepare_into(&self, out: &mut PreparedVerifyingKey<TURBO>) {
+        PreparedVerifyingKey::<TURBO>::prepare_into(self, out);
     }
 
     /// Prepare one of four rows. An invalid index leaves the output unchanged.
@@ -271,15 +278,15 @@ impl VerifyingKey {
         if index >= K {
             return Err(Error::InvalidRow);
         }
-        PreparedVerifyingKey::prepare_row(self, index, out);
+        PreparedVerifyingKey::<TURBO>::prepare_row(self, index, out);
         Ok(())
     }
 
     /// Compute the 64-byte public-key hash (`tr = H(pk, 64)`, FIPS 204 Algorithm 6 line 9).
     pub const fn public_key_hash(&self) -> [u8; TRBYTES] {
-        let mut s = Shake256::new();
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(&self.0);
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut tr = [0u8; TRBYTES];
         s.squeeze(&mut tr);
         tr
@@ -324,7 +331,7 @@ impl VerifyingKey {
     }
 }
 
-impl PreparedVerifyingKey {
+impl<const TURBO: bool> PreparedVerifyingKey<TURBO> {
     /// Verify a message with an empty FIPS 204 context, using the cached key.
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), Error> {
         self.verify_with_context(message, &[], signature)
@@ -357,12 +364,12 @@ impl PreparedVerifyingKey {
 
     /// Copy the prepared storage encoding on a host; use [`Self::as_bytes`] on Solana.
     #[cfg(not(target_os = "solana"))]
-    pub fn to_bytes(&self) -> [u8; Self::BYTE_LEN] {
+    pub fn to_bytes(&self) -> [u8; PREPARED_KEY_LEN] {
         *self.as_bytes()
     }
 }
 
-impl TryFrom<&[u8]> for VerifyingKey {
+impl<const TURBO: bool> TryFrom<&[u8]> for VerifyingKey<TURBO> {
     type Error = Error;
     fn try_from(bytes: &[u8]) -> Result<Self, Error> {
         Self::from_slice(bytes)
@@ -421,16 +428,21 @@ impl Signature {
     /// SBPF, of which the standard's 90 Keccak permutations (`ExpandA` and
     /// `tr`) are 890K. Sending both the key and signature requires a V1
     /// transaction; the caller must also budget for its accounts and message.
-    fn verify_with_key(&self, pk: &VerifyingKey, ctx: &[u8], msg: &[u8]) -> Result<(), Error> {
+    fn verify_with_key<const TURBO: bool>(
+        &self,
+        pk: &VerifyingKey<TURBO>,
+        ctx: &[u8],
+        msg: &[u8],
+    ) -> Result<(), Error> {
         if ctx.len() > CONTEXT_MAX_LEN {
             return Err(Error::ContextTooLong);
         }
-        let mut s = Shake256::new();
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(&pk.public_key_hash());
         s.absorb(&[0, ctx.len() as u8]);
         s.absorb(ctx);
         s.absorb(msg);
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut mu = [0u8; CRHBYTES];
         s.squeeze(&mut mu);
         self.verify_mu_with_key(pk, &mu)
@@ -438,7 +450,12 @@ impl Signature {
 
     /// ExternalMu-ML-DSA from the public key itself; see
     /// [`verify_with_key`](Self::verify_with_key).
-    fn verify_mu_with_key(&self, pk: &VerifyingKey, mu: &[u8; CRHBYTES]) -> Result<(), Error> {
+    #[inline(never)]
+    fn verify_mu_with_key<const TURBO: bool>(
+        &self,
+        pk: &VerifyingKey<TURBO>,
+        mu: &[u8; CRHBYTES],
+    ) -> Result<(), Error> {
         let counts = codec::hint_counts(self.hints()).ok_or(Error::InvalidSignature)?;
         let mut z0 = Poly::ZERO;
         self.z_hat(0, &mut z0)?;
@@ -447,16 +464,21 @@ impl Signature {
 
     /// FIPS 204 Algorithm 3, `ML-DSA.Verify`: verifies `msg` under `ctx`,
     /// with `M′ = 0x00 ‖ |ctx| ‖ ctx ‖ msg`.
-    fn verify(&self, key: &PreparedVerifyingKey, ctx: &[u8], msg: &[u8]) -> Result<(), Error> {
+    fn verify<const TURBO: bool>(
+        &self,
+        key: &PreparedVerifyingKey<TURBO>,
+        ctx: &[u8],
+        msg: &[u8],
+    ) -> Result<(), Error> {
         if ctx.len() > CONTEXT_MAX_LEN {
             return Err(Error::ContextTooLong);
         }
-        let mut s = Shake256::new();
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(&key.tr);
         s.absorb(&[0, ctx.len() as u8]);
         s.absorb(ctx);
         s.absorb(msg);
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut mu = [0u8; CRHBYTES];
         s.squeeze(&mut mu);
         self.verify_mu(key, &mu)
@@ -464,11 +486,15 @@ impl Signature {
 
     /// FIPS 204 Algorithm 8, `ML-DSA.Verify_internal`: verifies the
     /// caller-formatted `M′`.
-    fn verify_internal(&self, key: &PreparedVerifyingKey, m_prime: &[u8]) -> Result<(), Error> {
-        let mut s = Shake256::new();
+    fn verify_internal<const TURBO: bool>(
+        &self,
+        key: &PreparedVerifyingKey<TURBO>,
+        m_prime: &[u8],
+    ) -> Result<(), Error> {
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(&key.tr);
         s.absorb(m_prime);
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut mu = [0u8; CRHBYTES];
         s.squeeze(&mut mu);
         self.verify_mu(key, &mu)
@@ -476,7 +502,12 @@ impl Signature {
 
     /// ExternalMu-ML-DSA: verifies against a precomputed
     /// `μ = H(tr ‖ M′, 64)`.
-    fn verify_mu(&self, key: &PreparedVerifyingKey, mu: &[u8; CRHBYTES]) -> Result<(), Error> {
+    #[inline(never)]
+    fn verify_mu<const TURBO: bool>(
+        &self,
+        key: &PreparedVerifyingKey<TURBO>,
+        mu: &[u8; CRHBYTES],
+    ) -> Result<(), Error> {
         let counts = codec::hint_counts(self.hints()).ok_or(Error::InvalidSignature)?;
         let mut z0 = Poly::ZERO;
         self.z_hat(0, &mut z0)?;
@@ -503,14 +534,15 @@ impl Signature {
         Ok(())
     }
 
-    // One polynomial per SBPF frame: each `with_z*` level owns `NTT(z_j)`,
+    // One polynomial per SBPF frame: `verify_mu*` owns `NTT(z_0)`,
+    // each `with_z*` level owns `NTT(z_j)`,
     // `rows` owns `NTT(c)`, each `row` owns its `w`. `#[inline(never)]`
     // keeps the frames apart under LTO.
 
     #[inline(never)]
-    fn with_z1(
+    fn with_z1<const TURBO: bool>(
         &self,
-        key: &PreparedVerifyingKey,
+        key: &PreparedVerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z0: &Poly,
@@ -521,9 +553,9 @@ impl Signature {
     }
 
     #[inline(never)]
-    fn with_z2(
+    fn with_z2<const TURBO: bool>(
         &self,
-        key: &PreparedVerifyingKey,
+        key: &PreparedVerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z0: &Poly,
@@ -535,9 +567,9 @@ impl Signature {
     }
 
     #[inline(never)]
-    fn with_z3(
+    fn with_z3<const TURBO: bool>(
         &self,
-        key: &PreparedVerifyingKey,
+        key: &PreparedVerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z0: &Poly,
@@ -552,14 +584,14 @@ impl Signature {
     /// Row `i` of `w1 = UseHint(h, INTT(Â∘ẑ − ĉ∘t̂1))`, absorbed into the
     /// running `H(μ ‖ w1Encode(w1))`.
     #[inline(never)]
-    fn row(
+    fn row<const TURBO: bool>(
         &self,
-        key: &PreparedVerifyingKey,
+        key: &PreparedVerifyingKey<TURBO>,
         counts: &[u8; K],
         z: [&Poly; L],
         c_hat: &Poly,
         i: usize,
-        s: &mut Shake256,
+        s: &mut Shake<256, TURBO>,
     ) {
         let mut w = Poly::ZERO;
         w.row_lazy(&key.rows[i], z, c_hat);
@@ -570,9 +602,9 @@ impl Signature {
     }
 
     #[inline(never)]
-    fn raw_with_z1(
+    fn raw_with_z1<const TURBO: bool>(
         &self,
-        pk: &VerifyingKey,
+        pk: &VerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z0: &Poly,
@@ -583,9 +615,9 @@ impl Signature {
     }
 
     #[inline(never)]
-    fn raw_with_z2(
+    fn raw_with_z2<const TURBO: bool>(
         &self,
-        pk: &VerifyingKey,
+        pk: &VerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z0: &Poly,
@@ -597,9 +629,9 @@ impl Signature {
     }
 
     #[inline(never)]
-    fn raw_with_z3(
+    fn raw_with_z3<const TURBO: bool>(
         &self,
-        pk: &VerifyingKey,
+        pk: &VerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z0: &Poly,
@@ -613,23 +645,23 @@ impl Signature {
 
     /// `c̃ = H(μ ‖ w1Encode(w1))` row by row, expanding `Â` as it goes.
     #[inline(never)]
-    fn raw_rows(
+    fn raw_rows<const TURBO: bool>(
         &self,
-        pk: &VerifyingKey,
+        pk: &VerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z: [&Poly; L],
     ) -> Result<(), Error> {
         let mut c_hat = Poly::ZERO;
-        c_hat.challenge(self.c_tilde());
+        c_hat.challenge::<TURBO>(self.c_tilde());
         c_hat.ntt();
 
-        let mut s = Shake256::new();
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(mu);
         for i in 0..K {
             self.raw_row(pk, counts, z, &c_hat, i, &mut s);
         }
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut c2 = [0u8; CTILDEBYTES];
         s.squeeze(&mut c2);
         if c2 == *self.c_tilde() {
@@ -643,19 +675,19 @@ impl Signature {
     /// 2^d)`, each term computed in its own frame, then the same reduction,
     /// inverse transform and tail as the prepared-key row.
     #[inline(never)]
-    fn raw_row(
+    fn raw_row<const TURBO: bool>(
         &self,
-        pk: &VerifyingKey,
+        pk: &VerifyingKey<TURBO>,
         counts: &[u8; K],
         z: [&Poly; L],
         c_hat: &Poly,
         i: usize,
-        s: &mut Shake256,
+        s: &mut Shake<256, TURBO>,
     ) {
         let (rho, _) = pk.0.split_at(SEEDBYTES);
         let mut w = Poly::ZERO;
         for (j, zj) in z.iter().enumerate() {
-            matrix_term(&mut w, rho, ((i << 8) + j) as u16, zj);
+            matrix_term::<TURBO>(&mut w, rho, ((i << 8) + j) as u16, zj);
         }
         t1_term(&mut w, pk, i, c_hat);
         w.reduce_row(NEG_F_PLANTARD);
@@ -667,23 +699,23 @@ impl Signature {
 
     /// `c̃ = H(μ ‖ w1Encode(w1))`, row by row.
     #[inline(never)]
-    fn rows(
+    fn rows<const TURBO: bool>(
         &self,
-        key: &PreparedVerifyingKey,
+        key: &PreparedVerifyingKey<TURBO>,
         mu: &[u8; CRHBYTES],
         counts: &[u8; K],
         z: [&Poly; L],
     ) -> Result<(), Error> {
         let mut c_hat = Poly::ZERO;
-        c_hat.challenge(self.c_tilde());
+        c_hat.challenge::<TURBO>(self.c_tilde());
         c_hat.ntt();
 
-        let mut s = Shake256::new();
+        let mut s = Shake::<256, TURBO>::new();
         s.absorb(mu);
         for i in 0..K {
             self.row(key, counts, z, &c_hat, i, &mut s);
         }
-        let mut s = s.finalize();
+        let mut s = s.finalize_with_domain::<0x1f>();
         let mut c2 = [0u8; CTILDEBYTES];
         s.squeeze(&mut c2);
         if c2 == *self.c_tilde() {
@@ -694,7 +726,7 @@ impl Signature {
     }
 }
 
-impl AsRef<[u8]> for VerifyingKey {
+impl<const TURBO: bool> AsRef<[u8]> for VerifyingKey<TURBO> {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
     }
@@ -705,7 +737,7 @@ impl AsRef<[u8]> for Signature {
     }
 }
 #[cfg(not(target_os = "solana"))]
-impl TryFrom<&[u8]> for PreparedVerifyingKey {
+impl<const TURBO: bool> TryFrom<&[u8]> for PreparedVerifyingKey<TURBO> {
     type Error = Error;
     fn try_from(bytes: &[u8]) -> Result<Self, Error> {
         Self::from_slice(bytes)

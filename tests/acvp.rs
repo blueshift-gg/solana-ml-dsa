@@ -28,13 +28,13 @@ fn key_and_sig(case: &Value) -> (PreparedVerifyingKey, Signature) {
         .try_into()
         .unwrap();
     (
-        VerifyingKey::from_bytes(&pk).prepare(),
+        VerifyingKey::<false>::from_bytes(&pk).prepare(),
         Signature::from_bytes(&sig),
     )
 }
 
 fn raw_key(case: &Value) -> VerifyingKey {
-    VerifyingKey::from_bytes(&(unhex(case["pk"].as_str().unwrap()).try_into().unwrap()))
+    VerifyingKey::<false>::from_bytes(&(unhex(case["pk"].as_str().unwrap()).try_into().unwrap()))
 }
 
 #[test]

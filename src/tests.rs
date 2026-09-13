@@ -447,33 +447,33 @@ fn table_scaling_constant_multiplies_by_minus_f() {
 /// A row borrowed from bytes is exactly one row, at a 4-byte boundary.
 #[test]
 fn row_from_bytes_checks_length_and_alignment() {
-    let mut buf = [0u8; PreparedVerifyingKey::ROW_BYTE_LEN + 8];
+    let mut buf = [0u8; PreparedVerifyingKey::<false>::ROW_BYTE_LEN + 8];
     let aligned = (buf.as_ptr() as usize).next_multiple_of(4) - buf.as_ptr() as usize;
     assert!(
-        PreparedVerifyingKey::borrow_row_mut(
-            &mut buf[aligned..aligned + PreparedVerifyingKey::ROW_BYTE_LEN]
+        PreparedVerifyingKey::<false>::borrow_row_mut(
+            &mut buf[aligned..aligned + PreparedVerifyingKey::<false>::ROW_BYTE_LEN]
         )
         .is_ok()
     );
     assert!(
-        PreparedVerifyingKey::borrow_row_mut(
-            &mut buf[aligned + 1..aligned + 1 + PreparedVerifyingKey::ROW_BYTE_LEN]
+        PreparedVerifyingKey::<false>::borrow_row_mut(
+            &mut buf[aligned + 1..aligned + 1 + PreparedVerifyingKey::<false>::ROW_BYTE_LEN]
         )
         .is_err()
     );
     assert!(
-        PreparedVerifyingKey::borrow_row_mut(
-            &mut buf[aligned..aligned + PreparedVerifyingKey::ROW_BYTE_LEN - 4]
+        PreparedVerifyingKey::<false>::borrow_row_mut(
+            &mut buf[aligned..aligned + PreparedVerifyingKey::<false>::ROW_BYTE_LEN - 4]
         )
         .is_err()
     );
     assert_eq!(
-        K * PreparedVerifyingKey::ROW_BYTE_LEN + TRBYTES,
-        PreparedVerifyingKey::BYTE_LEN
+        K * PreparedVerifyingKey::<false>::ROW_BYTE_LEN + TRBYTES,
+        PreparedVerifyingKey::<false>::BYTE_LEN
     );
     assert_eq!(
-        PreparedVerifyingKey::PUBLIC_KEY_HASH_OFFSET + TRBYTES,
-        PreparedVerifyingKey::BYTE_LEN
+        PreparedVerifyingKey::<false>::PUBLIC_KEY_HASH_OFFSET + TRBYTES,
+        PreparedVerifyingKey::<false>::BYTE_LEN
     );
 }
 
