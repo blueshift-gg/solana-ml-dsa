@@ -1,0 +1,14 @@
+{
+  "name": "solana-ml-dsa-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "bun run --cwd packages/ml-dsa build",
+    "test": "bun run build && tsc -p tsconfig.test.json && bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -8,7 +8,7 @@ license = "MIT"
 keywords = ["ml-dsa", "dilithium", "post-quantum", "solana", "no-std"]
 categories = ["cryptography", "no-std"]
 readme = "README.md"
-exclude = [".github/", ".gitignore", "tests/", "program/"]
+exclude = [".github/", ".gitignore", "tests/", "program/", "packages/", "package.json", "bun.lock", "tsconfig*.json"]
 
 [workspace]
 members = ["program"]

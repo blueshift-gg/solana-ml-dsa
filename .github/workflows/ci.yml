@@ -48,3 +48,12 @@ jobs:
       - run: cargo test --test sbpf -- --nocapture --test-threads=1
       - run: cargo build-sbf --arch v3 --manifest-path program/Cargo.toml
       - run: cargo test -p solana-ml-dsa-example --test registration -- --nocapture
+
+  typescript:
+    name: bun test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run test

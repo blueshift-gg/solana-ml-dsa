@@ -33,7 +33,8 @@ For JavaScript signing, use Noble's [`ml_dsa44`](https://github.com/paulmillr/no
 TurboSHAKE128/256 with domain `0x1f`; preparation carries that choice into
 `PreparedVerifyingKey<true>`. This variant requires matching key generation and
 signing and is not FIPS 204 or compatible with Noble's unmodified `ml_dsa44`.
-The [test-vector generator](tests/fixtures/turbo.mjs) shows the matching Noble changes.
+The [TypeScript package](https://github.com/blueshift-gg/solana-ml-dsa/tree/main/packages/ml-dsa) provides matching key generation and signing
+through `@blueshift-gg/solana-ml-dsa/turboshake`, using Noble's API.
 
 ### Prepared keys
 
