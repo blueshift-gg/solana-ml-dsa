@@ -2681,8 +2681,9 @@ dependencies = [
 
 [[package]]
 name = "solana-shake"
-version = "0.1.0"
-source = "git+https://github.com/blueshift-gg/solana-shake?rev=684f8152dd8b75c8793ba495511b9b938b1b5aeb#684f8152dd8b75c8793ba495511b9b938b1b5aeb"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01afca2d63fff9bb19b61ee09ecc0a7a570b949aee24544d4dc4301a78887d06"
 
 [[package]]
 name = "solana-short-vec"
