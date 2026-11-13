@@ -14,7 +14,7 @@ ML-DSA-44 signature verification for Solana programs ([FIPS 204](https://doi.org
 
 ```toml
 [dependencies]
-solana-ml-dsa = { git = "https://github.com/blueshift-gg/solana-ml-dsa" }
+solana-ml-dsa = "0.1.0"
 ```
 
 ```rust
@@ -53,15 +53,15 @@ fn prepare(key: &[u8], storage: &mut [u8]) -> Result<(), Error> {
 Storage must be `PreparedVerifyingKey::<false>::BYTE_LEN` bytes and four-byte aligned.
 Only use prepared bytes initialized by your program for the intended key.
 
-The [example program](program/src/lib.rs) registers a key and verifies signatures
-from its account. Its [test](program/tests/registration.rs) shows account creation
+The [example program](https://github.com/blueshift-gg/solana-ml-dsa/blob/main/program/src/lib.rs) registers a key and verifies signatures
+from its account. Its [test](https://github.com/blueshift-gg/solana-ml-dsa/blob/main/program/tests/registration.rs) shows account creation
 and registration in one transaction.
 Tags `0`/`1` create and verify with SHAKE; `2`/`3` use TurboSHAKE. The account
 header binds the mode at creation.
 
 ## Compute units
 
-Measured on SBPF v3; [benchmarks](tests/sbpf.rs).
+Measured on SBPF v3; [benchmarks](https://github.com/blueshift-gg/solana-ml-dsa/blob/main/tests/sbpf.rs).
 
 | Operation | SHAKE CU | TurboSHAKE CU |
 |---|---:|---:|
@@ -72,7 +72,7 @@ Measured on SBPF v3; [benchmarks](tests/sbpf.rs).
 ## Tests
 
 ```sh
-cargo test --release --lib --test acvp --test oracle --test campaign --test sdk
+cargo test --release --lib --test acvp --test oracle --test campaign --test sdk --test turbo
 cargo test --doc
 cargo test --test sbpf -- --nocapture --test-threads=1
 cargo build-sbf --arch v3 --manifest-path program/Cargo.toml
